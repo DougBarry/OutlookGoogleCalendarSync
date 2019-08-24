@@ -778,6 +778,10 @@ namespace OutlookGoogleCalendarSync.GoogleOgcs {
                     }
                     break;
                 } catch (Google.GoogleApiException ex) {
+                    log.Debug("Event locked: " + ev.Locked);
+                    log.Debug("Event creator: Email=" + ev.Creator.Email + "; Id=" + ev.Creator.Id + "; Self=" + ev.Creator.Self);
+                    log.Debug("Event organizer: Email=" + ev.Organizer.Email + "; Id=" + ev.Organizer.Id + "; Self=" + ev.Organizer.Self);
+
                     switch (handleAPIlimits(ex, ev)) {
                         case apiException.throwException: throw;
                         case apiException.freeAPIexhausted:
