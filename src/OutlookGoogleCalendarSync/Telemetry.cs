@@ -7,6 +7,7 @@ namespace OutlookGoogleCalendarSync {
         private static readonly ILog log = LogManager.GetLogger(typeof(Telemetry));
 
         public static void TrackVersions() {
+            return;
             if (Program.InDeveloperMode) return;
 
             //OUTLOOK CLIENT
@@ -34,11 +35,13 @@ namespace OutlookGoogleCalendarSync {
         }
 
         public static void TrackSync() {
+            return;
             if (Program.InDeveloperMode) return;
             Send(Analytics.Category.ogcs, Analytics.Action.sync, "calendar");
         }
 
         public static void Send(Analytics.Category category, Analytics.Action action, String label) {
+            return;
             String cid = GoogleOgcs.Authenticator.HashedGmailAccount ?? "1";
             String baseAnalyticsUrl = "https://www.google-analytics.com/collect?v=1&t=event&tid=UA-19426033-4&cid=" + cid;
 
