@@ -1,4 +1,4 @@
-﻿using Google.Apis.Calendar.v3;
+using Google.Apis.Calendar.v3;
 using Google.Apis.Calendar.v3.Data;
 using log4net;
 using Microsoft.Office.Interop.Outlook;
@@ -354,6 +354,9 @@ namespace OutlookGoogleCalendarSync.GoogleOgcs {
             ev = OutlookOgcs.Calendar.Instance.IOutlook.IANAtimezone_set(ev, ai);
 
             ev.Summary = Obfuscate.ApplyRegex(ai.Subject, Sync.Direction.OutlookToGoogle);
+
+            ev.Summary = "Doug - " + ev.Summary;
+
             if (Settings.Instance.AddDescription) {
                 try {
                     ev.Description = ai.Body;
