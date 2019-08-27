@@ -11,12 +11,23 @@ namespace OutlookGoogleCalendarSync {
 
     public static class ILogExtensions {
 
+        #region Fail
+        private static void Fail(this ILog log, string message, System.Exception exception) {
+            log.Logger.Log(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType,
+                Program.MyFailLevel, message, exception);
+        }
+        public static void Fail(this ILog log, string message) {
+            log.Fail(message, null);
+        }
+        #endregion
+
+        #region Fine
         private static void Fine(this ILog log, string message, System.Exception exception) {
             log.Logger.Log(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType,
                 Program.MyFineLevel, message, exception);
         }
         public static void Fine(this ILog log, string message) {
-            log.Fine(message, exception:null);
+            log.Fine(message, exception: null);
         }
         public static void Fine(this ILog log, string message, String containsEmail) {
             if (Settings.Instance.LoggingLevel != "ULTRA-FINE" && !string.IsNullOrEmpty(containsEmail)) {
@@ -27,13 +38,30 @@ namespace OutlookGoogleCalendarSync {
         public static Boolean IsFineEnabled(this ILog log) {
             return log.Logger.IsEnabledFor(Program.MyFineLevel);
         }
+        #endregion
 
+        #region UltraFine
         private static void UltraFine(this ILog log, string message, System.Exception exception) {
             log.Logger.Log(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType,
                 Program.MyUltraFineLevel, message, exception);
         }
         public static void UltraFine(this ILog log, string message) {
             log.UltraFine(message, null);
+        }
+        public static Boolean IsUltraFineEnabled(this ILog log) {
+            return log.Logger.IsEnabledFor(Program.MyUltraFineLevel);
+        }
+        #endregion
+
+        /// <summary>
+        /// Log a message at either of these levels
+        /// </summary>
+        /// <param name="log"></param>
+        /// <param name="message"></param>
+        /// <param name="level">The level to log the message at</param>
+        public static void ErrorOrFail(this ILog log, String message, log4net.Core.Level level) {
+            if (level == Program.MyFailLevel) log.Fail(message);
+            else log.Error(message);
         }
     }
 
@@ -45,7 +73,7 @@ namespace OutlookGoogleCalendarSync {
         /// When an error is logged, check if user has chosen to upload logs or not
         /// </summary>
         protected override void Append(LoggingEvent loggingEvent) {
-            if (errorOccurred) return;
+            if (!GoogleOgcs.ErrorReporting.Initialised || errorOccurred) return;
             errorOccurred = true;
             String configSetting = null;
 
@@ -63,7 +91,7 @@ namespace OutlookGoogleCalendarSync {
             }
 
             //Cloud logging value not set yet - let's ask the user
-            Forms.ErrorReporting frm = new Forms.ErrorReporting();
+            Forms.ErrorReporting frm = Forms.ErrorReporting.Instance;
             DialogResult dr = frm.ShowDialog();
             if (dr == DialogResult.Cancel) {
                 errorOccurred = false;
@@ -71,11 +99,10 @@ namespace OutlookGoogleCalendarSync {
             }
             Boolean confirmative = dr == DialogResult.Yes;
             if (Settings.IsLoaded) Settings.Instance.CloudLogging = confirmative;
-            else XMLManager.ExportElement("CloudLogging", confirmative, Settings.ConfigFile);
-            Analytics.Send(Analytics.Category.ogcs, Analytics.Action.setting, "CloudLogging=" + confirmative.ToString());
+            Telemetry.Send(Analytics.Category.ogcs, Analytics.Action.setting, "CloudLogging=" + confirmative.ToString());
 
             try {
-                Forms.Main.Instance.SetControlPropertyThreadSafe(Forms.Main.Instance.cbCloudLogging, "Checked", confirmative);
+                Forms.Main.Instance.SetControlPropertyThreadSafe(Forms.Main.Instance.cbCloudLogging, "CheckState", confirmative ? CheckState.Checked : CheckState.Unchecked);
             } catch { }
 
             if (confirmative) replayLogs();

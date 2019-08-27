@@ -25,13 +25,14 @@ namespace OutlookGoogleCalendarSync {
             this.icon.MouseClick += notifyIcon_Click;
             this.icon.MouseDoubleClick += notifyIcon_DoubleClick;
             this.icon.BalloonTipClicked += notifyIcon_BubbleClick;
+            this.icon.Icon = Forms.Main.Instance.Icon;
             this.icon.Visible = true;
             buildMenu();
 
             if (OutlookOgcs.Calendar.OOMsecurityInfo) {
                 ShowBubbleInfo("Your Outlook security settings may not be optimal.\r\n" +
                     "Click here for further details.", ToolTipIcon.Warning, "OOMsecurity");
-                Analytics.Send(Analytics.Category.ogcs, Analytics.Action.setting, "OOMsecurity;SyncCount=" + Settings.Instance.CompletedSyncs);
+                Telemetry.Send(Analytics.Category.ogcs, Analytics.Action.setting, "OOMsecurity;SyncCount=" + Settings.Instance.CompletedSyncs);
             }
         }
 
@@ -126,8 +127,8 @@ namespace OutlookGoogleCalendarSync {
                 }
                 if (Sync.Engine.Instance.OgcsTimer == null) Sync.Engine.Instance.OgcsTimer = new Sync.SyncTimer();
                 Sync.Engine.Instance.OgcsTimer.Switch(true);
-                Forms.Main.Instance.lNextSyncVal.Font = new System.Drawing.Font(Forms.Main.Instance.lNextSyncVal.Font, System.Drawing.FontStyle.Regular);
-                if (Settings.Instance.OutlookPush) OutlookOgcs.Calendar.Instance.RegisterForPushSync();
+                Forms.Main.Instance.StrikeOutNextSyncVal(false);
+                if (Settings.Instance.OutlookPush) Sync.Engine.Instance.RegisterForPushSync();
                 UpdateAutoSyncItems();
             } else {
                 if (Sync.Engine.Instance.OgcsTimer == null) {
@@ -135,8 +136,8 @@ namespace OutlookGoogleCalendarSync {
                     return;
                 }
                 Sync.Engine.Instance.OgcsTimer.Switch(false);
-                Forms.Main.Instance.lNextSyncVal.Font = new System.Drawing.Font(Forms.Main.Instance.lNextSyncVal.Font, System.Drawing.FontStyle.Strikeout);
-                if (Settings.Instance.OutlookPush) OutlookOgcs.Calendar.Instance.DeregisterForPushSync();
+                Forms.Main.Instance.StrikeOutNextSyncVal(true);
+                if (Settings.Instance.OutlookPush) Sync.Engine.Instance.DeregisterForPushSync();
                 UpdateAutoSyncItems();
             }
         }
@@ -147,7 +148,7 @@ namespace OutlookGoogleCalendarSync {
                 return;
             }
             Sync.Engine.Instance.OgcsTimer.SetNextSync(60, fromNow: true);
-            OutlookOgcs.Calendar.Instance.DeregisterForPushSync();
+            Sync.Engine.Instance.DeregisterForPushSync();
             UpdateItem("delayRemove", enabled: true);
         }
         private void delaySync2Hr_Click(object sender, EventArgs e) {
@@ -157,7 +158,7 @@ namespace OutlookGoogleCalendarSync {
                 return;
             }
             Sync.Engine.Instance.OgcsTimer.SetNextSync(2 * 60, fromNow: true);
-            OutlookOgcs.Calendar.Instance.DeregisterForPushSync();
+            Sync.Engine.Instance.DeregisterForPushSync();
             UpdateItem("delayRemove", enabled: true);
         }
         private void delaySync4Hr_Click(object sender, EventArgs e) {
@@ -167,7 +168,7 @@ namespace OutlookGoogleCalendarSync {
                 return;
             }
             Sync.Engine.Instance.OgcsTimer.SetNextSync(4 * 60, fromNow: true);
-            OutlookOgcs.Calendar.Instance.DeregisterForPushSync();
+            Sync.Engine.Instance.DeregisterForPushSync();
             UpdateItem("delayRemove", enabled: true);
         }
         private void delaySyncRemove_Click(object sender, EventArgs e) {
@@ -177,7 +178,7 @@ namespace OutlookGoogleCalendarSync {
                 return;
             }
             Sync.Engine.Instance.OgcsTimer.SetNextSync();
-            if (Settings.Instance.OutlookPush) OutlookOgcs.Calendar.Instance.RegisterForPushSync();
+            if (Settings.Instance.OutlookPush) Sync.Engine.Instance.RegisterForPushSync();
             UpdateItem("delayRemove", enabled: false);
         }
 
@@ -222,7 +223,7 @@ namespace OutlookGoogleCalendarSync {
         }
         #endregion
 
-        public void ShowBubbleInfo(string message, ToolTipIcon iconType = ToolTipIcon.Info, String tagValue = "") {
+        public void ShowBubbleInfo(string message, ToolTipIcon iconType = ToolTipIcon.None, String tagValue = "") {
             if (Settings.Instance.ShowBubbleTooltipWhenSyncing) {
                 this.icon.ShowBalloonTip(
                     500,

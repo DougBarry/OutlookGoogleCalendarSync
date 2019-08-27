@@ -16,11 +16,18 @@ namespace OutlookGoogleCalendarSync {
         private const string logSettingsFile = "logger.xml";
         private const string defaultLogFilename = "OGcalsync.log";
         public static String WorkingFilesDirectory;
+        public static log4net.Core.Level MyFailLevel = new log4net.Core.Level(65000, "FAIL"); //An error but not one for reporting
         //log4net.Core.Level.Fine == log4net.Core.Level.Debug (30000), so manually changing its value
         public static log4net.Core.Level MyFineLevel = new log4net.Core.Level(25000, "FINE");
         public static log4net.Core.Level MyUltraFineLevel = new log4net.Core.Level(24000, "ULTRA-FINE"); //Logs email addresses
 
         public static Boolean StartedWithFileArgs = false;
+        public static Boolean StartedWithSquirrelArgs {
+            get {
+                String[] cliArgs = Environment.GetCommandLineArgs().Skip(1).ToArray();
+                return (cliArgs.Length == 2 && cliArgs[0].ToLower().StartsWith("--squirrel"));
+            }
+        }
         /// <summary>
         /// The OGCS directory within user's roaming profile
         /// </summary>
@@ -40,24 +47,24 @@ namespace OutlookGoogleCalendarSync {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
-            GoogleOgcs.ErrorReporting.Initialise();
-            
-            RoamingProfileOGCS = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), Application.ProductName);
-            parseArgumentsAndInitialise(args);
-            
-            Updater.MakeSquirrelAware();
-            Forms.Splash.ShowMe();
-
-            log.Debug("Loading settings from file.");
-            Settings.Load();
-
-            Updater = new Updater();
-            isNewVersion(Program.IsInstalled); 
-            Updater.CheckForUpdate();
-
-            TimezoneDB.Instance.CheckForUpdate();
-
             try {
+                GoogleOgcs.ErrorReporting.Initialise();
+
+                RoamingProfileOGCS = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), Application.ProductName);
+                parseArgumentsAndInitialise(args);
+
+                Updater.MakeSquirrelAware();
+                Forms.Splash.ShowMe();
+
+                log.Debug("Loading settings from file.");
+                Settings.Load();
+
+                Updater = new Updater();
+                isNewVersion(Program.IsInstalled);
+                Updater.CheckForUpdate();
+
+                TimezoneDB.Instance.CheckForUpdate();
+
                 try {
                     String startingTab = Settings.Instance.LastSyncDate == new DateTime(0) ? "Help" : null;
                     Application.Run(new Forms.Main(startingTab));
@@ -76,7 +83,7 @@ namespace OutlookGoogleCalendarSync {
                     throw new ApplicationException("Suggest startup delay");
 
                 } catch (System.Exception ex) {
-                    OGCSexception.Analyse(ex);
+                    OGCSexception.Analyse(ex, true);
                     log.Fatal("Application unexpectedly terminated!");
                     MessageBox.Show(ex.Message, "Application unexpectedly terminated!", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     throw new ApplicationException();
@@ -90,19 +97,16 @@ namespace OutlookGoogleCalendarSync {
                             ((Settings.Instance.StartupDelay == 0) ? "setting a" : "increasing the") + " delay for OGCS on startup.",
                             "Set a delay on startup", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     }
-                }
+                } else
+                    MessageBox.Show(aex.Message, "Application terminated!", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
+
                 log.Warn("Tidying down any remaining Outlook references, as OGCS crashed out.");
-                try {
-                    if (!OutlookOgcs.Calendar.IsInstanceNull) {
-                        OutlookOgcs.Calendar.InstanceConnect = false;
-                        OutlookOgcs.Calendar.Instance.Disconnect();
-                    }
-                } catch { }
+                OutlookOgcs.Calendar.Disconnect();
             }
             Forms.Splash.CloseMe();
             GC.Collect();
             GC.WaitForPendingFinalizers();
-            while (Updater.IsBusy) {
+            while (Updater != null && Updater.IsBusy) {
                 Application.DoEvents();
                 System.Threading.Thread.Sleep(100);
             }
@@ -207,6 +211,7 @@ namespace OutlookGoogleCalendarSync {
             }
             UserFilePath = logPath;
             log4net.GlobalContext.Properties["LogPath"] = logPath + "\\";
+            log4net.LogManager.GetRepository().LevelMap.Add(MyFailLevel);
             log4net.LogManager.GetRepository().LevelMap.Add(MyFineLevel);
             log4net.LogManager.GetRepository().LevelMap.Add(MyUltraFineLevel);
 
@@ -426,11 +431,16 @@ namespace OutlookGoogleCalendarSync {
             string settingsVersion = string.IsNullOrEmpty(Settings.Instance.Version) ? "Unknown" : Settings.Instance.Version;
             if (settingsVersion != Application.ProductVersion) {
                 log.Info("New version detected - upgraded from " + settingsVersion + " to " + Application.ProductVersion);
-                Program.ManageStartupRegKey(recreate: true);
+                try {
+                    Program.ManageStartupRegKey(recreate: true);
+                } catch (System.Exception ex) {
+                    if (ex is System.Security.SecurityException) OGCSexception.LogAsFail(ref ex); //User doesn't have rights to access registry
+                    OGCSexception.Analyse("Failed accessing registry for startup key.", ex);
+                }
                 Settings.Instance.Version = Application.ProductVersion;
                 if (Application.ProductVersion.EndsWith(".0")) { //Release notes not updated for hotfixes.
                     System.Diagnostics.Process.Start("https://github.com/phw198/OutlookGoogleCalendarSync/blob/master/docs/Release%20Notes.md");
-                    if (isSquirrelInstall) Analytics.Send(Analytics.Category.squirrel, Analytics.Action.upgrade, "from=" + settingsVersion + ";to=" + Application.ProductVersion);
+                    if (isSquirrelInstall) Telemetry.Send(Analytics.Category.squirrel, Analytics.Action.upgrade, "from=" + settingsVersion + ";to=" + Application.ProductVersion);
                 }
             }
 
@@ -474,6 +484,14 @@ namespace OutlookGoogleCalendarSync {
                 OGCSexception.Analyse(ex);
                 return false;
             }
+        }
+
+        public static void Donate() {
+            System.Diagnostics.Process.Start("https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=44DUQ7UT6WE2C&item_name=Outlook Google Calendar Sync from " + Settings.Instance.GaccountEmail);
+        }
+
+        public static Boolean InDeveloperMode {
+            get { return System.Diagnostics.Debugger.IsAttached; }
         }
     }
 }

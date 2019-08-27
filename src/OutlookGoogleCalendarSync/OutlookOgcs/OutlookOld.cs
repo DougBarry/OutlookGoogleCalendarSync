@@ -265,7 +265,7 @@ namespace OutlookGoogleCalendarSync.OutlookOgcs {
                 Forms.Main.Instance.lOutlookCalendar.Text = "Select calendar";
             } catch (System.Exception ex) {
                 OGCSexception.Analyse(ex, true);
-                throw ex;
+                throw;
             }
         }
 
@@ -700,10 +700,14 @@ namespace OutlookGoogleCalendarSync.OutlookOgcs {
             }
 
             NodaTime.TimeZones.TzdbDateTimeZoneSource tzDBsource = TimezoneDB.Instance.Source;
-            TimeZoneInfo tzi = TimeZoneInfo.FindSystemTimeZoneById(oTZ_id);
-            String tzID = tzDBsource.MapTimeZoneId(tzi);
-            log.Fine("Timezone \"" + oTZ_name + "\" mapped to \"" + tzDBsource.CanonicalIdMap[tzID] + "\"");
-            return tzDBsource.CanonicalIdMap[tzID];
+            String retVal = null;
+            if (!tzDBsource.WindowsMapping.PrimaryMapping.TryGetValue(oTZ_id, out retVal) || retVal == null)
+                log.Fail("Could not find mapping for \"" + oTZ_name + "\"");
+            else {
+                retVal = tzDBsource.CanonicalIdMap[retVal];
+                log.Fine("Timezone \"" + oTZ_name + "\" mapped to \"" + retVal + "\"");
+            }
+            return retVal;
         }
 
         public void WindowsTimeZone_get(AppointmentItem ai, out String startTz, out String endTz) {
@@ -719,14 +723,16 @@ namespace OutlookGoogleCalendarSync.OutlookOgcs {
 
         private DateTime WindowsTimeZone(EventDateTime time) {
             DateTime theDate = time.DateTime ?? DateTime.Parse(time.Date);
-            if (time.TimeZone == null) return theDate;
+            /*if (time.TimeZone == null)*/ return theDate;
 
+            /*Issue #713: It appears Outlook will calculate the UTC time itself, based on the system's timezone
             LocalDateTime local = new LocalDateTime(theDate.Year, theDate.Month, theDate.Day, theDate.Hour, theDate.Minute);
             DateTimeZone zone = DateTimeZoneProviders.Tzdb[TimezoneDB.FixAlexa(time.TimeZone)];
             ZonedDateTime zonedTime = local.InZoneLeniently(zone);
             DateTime zonedUTC = zonedTime.ToDateTimeUtc();
             log.Fine("IANA Timezone \"" + time.TimeZone + "\" mapped to \""+ zone.Id.ToString() +"\" with a UTC of "+ zonedUTC.ToString("dd/MM/yyyy HH:mm:ss"));
             return zonedUTC;
+            */
         }
         #endregion
     }

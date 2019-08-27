@@ -34,7 +34,7 @@ namespace OutlookGoogleCalendarSync.Forms {
             Instance = this;
 
             console = new Console(consoleWebBrowser);
-            Social.TrackVersions();
+            Telemetry.TrackVersions();
             updateGUIsettings();
             Settings.Instance.LogSettings();
             NotificationTray = new NotificationTray(this.trayIcon);
@@ -43,18 +43,19 @@ namespace OutlookGoogleCalendarSync.Forms {
             Sync.Engine.Instance.OgcsTimer = new Sync.SyncTimer();
 
             //Set up listener for Outlook calendar changes
-            if (Settings.Instance.OutlookPush) OutlookOgcs.Calendar.Instance.RegisterForPushSync();
+            if (Settings.Instance.OutlookPush) Sync.Engine.Instance.RegisterForPushSync();
 
             if (Settings.Instance.StartInTray) {
                 this.CreateHandle();
                 this.WindowState = FormWindowState.Minimized;
             }
             if (((Sync.Engine.Instance.OgcsTimer.NextSyncDate ?? DateTime.Now.AddMinutes(10)) - DateTime.Now).TotalMinutes > 5) {
-                OutlookOgcs.Calendar.Instance.Disconnect(onlyWhenNoGUI: true);
+                OutlookOgcs.Calendar.Disconnect(onlyWhenNoGUI: true);
             }
         }
 
         private void updateGUIsettings() {
+            log.Debug("Configuring main form components.");
             this.SuspendLayout();
             #region Tooltips
             //set up tooltips for some controls
@@ -93,6 +94,8 @@ namespace OutlookGoogleCalendarSync.Forms {
                 "All rules are applied in order provided using AND logic.\nSupports use of regular expressions.");
             ToolTips.SetToolTip(cbUseGoogleDefaultReminder,
                 "If the calendar settings in Google have a default reminder configured, use this when Outlook has no reminder.");
+            ToolTips.SetToolTip(cbUseOutlookDefaultReminder,
+                "If the calendar settings in Outlook have a default reminder configured, use this when Google has no reminder.");
             ToolTips.SetToolTip(cbAddAttendees,
                 "BE AWARE: Deleting Google event through mobile calendar app will notify all attendees.");
             ToolTips.SetToolTip(cbCloakEmail,
@@ -104,8 +107,10 @@ namespace OutlookGoogleCalendarSync.Forms {
             //Application behaviour
             if (Settings.Instance.StartOnStartup)
                 ToolTips.SetToolTip(tbStartupDelay, "Try setting a delay if COM errors occur on startup.");
-            if (!Settings.Instance.Donor)
+            if (!Settings.Instance.UserIsBenefactor()) {
                 ToolTips.SetToolTip(cbHideSplash, "Donate £10 or more to enable this feature.");
+                ToolTips.SetToolTip(cbSuppressSocialPopup, "Donate £10 or more to enable this feature.");
+            }
             ToolTips.SetToolTip(cbPortable,
                 "For ZIP deployments, store configuration files in the application folder (useful if running from a USB thumb drive).\n" +
                 "Default is in your User roaming profile.");
@@ -118,11 +123,18 @@ namespace OutlookGoogleCalendarSync.Forms {
             ToolTips.SetToolTip(cbMuteClicks, "Mute any sounds when sync summary updates.");
             #endregion
 
+            if (Settings.Instance.ExtirpateOgcsMetadata) {
+                bSyncNow.FlatStyle = FlatStyle.Flat;
+                bSyncNow.BackColor = System.Drawing.Color.PaleVioletRed;
+                console.Update("<b>An advanced setting has been enabled.</b><br>If you perform a sync, it will remove all OGCS metadata from your calendar items within the synced date range, " +
+                    "but it will <i>not</i> remove the actual calendar items themselves.<br>This can be useful if you wish to 'reset' your calendars to a state similar to before you ever used OGCS.",
+                    Console.Markup.warning);
+            }
             cbVerboseOutput.Checked = Settings.Instance.VerboseOutput;
             cbMuteClicks.Checked = Settings.Instance.MuteClickSounds;
             #region Outlook box
             #region Mailbox
-            if (OutlookOgcs.Factory.is2003()) {
+            if (OutlookOgcs.Factory.Is2003()) {
                 rbOutlookDefaultMB.Checked = true;
                 rbOutlookAltMB.Enabled = false;
                 rbOutlookSharedCal.Enabled = false;
@@ -137,7 +149,7 @@ namespace OutlookGoogleCalendarSync.Forms {
             }
 
             //Mailboxes the user has access to
-            log.Debug("Find Folders");
+            log.Debug("Find calendar folders");
             if (OutlookOgcs.Calendar.Instance.Folders.Count == 1) {
                 rbOutlookAltMB.Enabled = false;
                 rbOutlookAltMB.Checked = false;
@@ -163,12 +175,8 @@ namespace OutlookGoogleCalendarSync.Forms {
                 }
             }
             theFolders = (Folders)OutlookOgcs.Calendar.ReleaseObject(theFolders);
-            foreach (String folder in folderIDs.Keys) {
-                ddMailboxName.Items.Add(folder);
-                if (Settings.Instance.MailboxName == folder) {
-                    ddMailboxName.SelectedItem = folder;
-                }
-            }
+            ddMailboxName.Items.AddRange(folderIDs.Keys.ToArray());
+            ddMailboxName.SelectedItem = Settings.Instance.MailboxName;
 
             if (ddMailboxName.SelectedIndex == -1 && ddMailboxName.Items.Count > 0) { ddMailboxName.SelectedIndex = 0; }
 
@@ -192,13 +200,14 @@ namespace OutlookGoogleCalendarSync.Forms {
             #region Categories
             cbCategoryFilter.SelectedItem = Settings.Instance.CategoriesRestrictBy == Settings.RestrictBy.Include ?
                 "Include" : "Exclude";
-            clbCategories.Items.Clear();
             if (OutlookOgcs.Factory.OutlookVersion < 12) {
+                clbCategories.Items.Clear();
                 cbCategoryFilter.Enabled = false;
                 clbCategories.Enabled = false;
                 lFilterCategories.Enabled = false;
             } else {
-                refreshCategories();
+                OutlookOgcs.Calendar.Categories.BuildPicker(ref clbCategories);
+                enableOutlookSettingsUI(true);
             }
             #endregion
             cbOnlyRespondedInvites.Checked = Settings.Instance.OnlyRespondedInvites;
@@ -234,6 +243,7 @@ namespace OutlookGoogleCalendarSync.Forms {
             #endregion
             #endregion
             #region Google box
+            tbConnectedAcc.Text = string.IsNullOrEmpty(Settings.Instance.GaccountEmail) ? "Not connected" : Settings.Instance.GaccountEmail;
             if (Settings.Instance.UseGoogleCalendar != null && Settings.Instance.UseGoogleCalendar.Id != null) {
                 cbGoogleCalendars.Items.Add(Settings.Instance.UseGoogleCalendar);
                 cbGoogleCalendars.SelectedIndex = 0;
@@ -335,7 +345,7 @@ namespace OutlookGoogleCalendarSync.Forms {
             cbCloakEmail.Visible = cbAddAttendees.Checked && Settings.Instance.SyncDirection != Sync.Direction.GoogleToOutlook;
             cbAddReminders.Checked = Settings.Instance.AddReminders;
             cbUseGoogleDefaultReminder.Checked = Settings.Instance.UseGoogleDefaultReminder;
-            cbUseGoogleDefaultReminder.Enabled = Settings.Instance.AddReminders;
+            cbUseOutlookDefaultReminder.Checked = Settings.Instance.UseOutlookDefaultReminder;
             cbReminderDND.Enabled = Settings.Instance.AddReminders;
             cbReminderDND.Checked = Settings.Instance.ReminderDND;
             dtDNDstart.Enabled = Settings.Instance.AddReminders;
@@ -347,17 +357,20 @@ namespace OutlookGoogleCalendarSync.Forms {
             #endregion
             #endregion
             #region Application behaviour
+            syncOptionSizing(gbAppBehaviour_Logging, pbExpandLogging, true);
+            syncOptionSizing(gbAppBehaviour_Proxy, pbExpandProxy, false);
             cbShowBubbleTooltips.Checked = Settings.Instance.ShowBubbleTooltipWhenSyncing;
             cbStartOnStartup.Checked = Settings.Instance.StartOnStartup;
             tbStartupDelay.Value = Settings.Instance.StartupDelay;
             tbStartupDelay.Enabled = cbStartOnStartup.Checked;
             cbHideSplash.Checked = Settings.Instance.HideSplashScreen;
+            cbSuppressSocialPopup.Checked = Settings.Instance.SuppressSocialPopup;
             cbStartInTray.Checked = Settings.Instance.StartInTray;
             cbMinimiseToTray.Checked = Settings.Instance.MinimiseToTray;
             cbMinimiseNotClose.Checked = Settings.Instance.MinimiseNotClose;
             cbPortable.Checked = Settings.Instance.Portable;
             cbPortable.Enabled = !Program.IsInstalled;
-            cbCreateFiles.Checked = Settings.Instance.CreateCSVFiles;
+            #region Logging
             for (int i = 0; i < cbLoggingLevel.Items.Count; i++) {
                 if (cbLoggingLevel.Items[i].ToString().ToLower() == Settings.Instance.LoggingLevel.ToLower()) {
                     cbLoggingLevel.SelectedIndex = i;
@@ -365,7 +378,8 @@ namespace OutlookGoogleCalendarSync.Forms {
                 }
             }
             cbCloudLogging.CheckState = Settings.Instance.CloudLogging == null ? CheckState.Indeterminate : (CheckState)(Convert.ToInt16((bool)Settings.Instance.CloudLogging));
-            
+            cbCreateFiles.Checked = Settings.Instance.CreateCSVFiles;
+            #endregion
             updateGUIsettings_Proxy();
             #endregion
             linkTShoot_logfile.Text = log4net.GlobalContext.Properties["LogFilename"] + " file";
@@ -406,6 +420,9 @@ namespace OutlookGoogleCalendarSync.Forms {
             txtProxyPort.Text = Settings.Instance.Proxy.Port.ToString();
             txtProxyServer.Enabled = rbProxyCustom.Checked;
             txtProxyPort.Enabled = rbProxyCustom.Checked;
+            tbBrowserAgent.Text = Settings.Instance.Proxy.BrowserUserAgent;
+            tbBrowserAgent.Enabled = rbProxyCustom.Checked;
+            btCheckBrowserAgent.Enabled = rbProxyCustom.Checked;
 
             if (!string.IsNullOrEmpty(Settings.Instance.Proxy.UserName) &&
                 !string.IsNullOrEmpty(Settings.Instance.Proxy.Password)) {
@@ -455,16 +472,16 @@ namespace OutlookGoogleCalendarSync.Forms {
                 if (String.IsNullOrEmpty(txtProxyServer.Text) || String.IsNullOrEmpty(txtProxyPort.Text)) {
                     MessageBox.Show("A proxy server name and port must be provided.", "Proxy Authentication Enabled",
                         MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    txtProxyServer.Focus();
                     return;
                 }
                 int nPort;
                 if (!int.TryParse(txtProxyPort.Text, out nPort)) {
                     MessageBox.Show("Proxy server port must be a number.", "Invalid Proxy Port",
                         MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    txtProxyPort.Focus();
                     return;
                 }
+
+                Settings.Instance.Proxy.BrowserUserAgent = tbBrowserAgent.Text;
 
                 string userName = null;
                 string password = null;
@@ -535,7 +552,8 @@ namespace OutlookGoogleCalendarSync.Forms {
                     note =  "  Your annual subscription for guaranteed quota   " + cr +
                             "  for Google calendar usage is expiring on " + expiration.ToString("dd-MMM") + "." + cr +
                             "         Click to renew for just £1/month.        ";
-                    url = urlStub + "OGCS Premium renewal from " + expiration.ToString("dd-MMM-yy") + " for " + Settings.Instance.GaccountEmail;
+                    url = urlStub + "OGCS Premium renewal from " + expiration.ToString("dd-MMM-yy", new System.Globalization.CultureInfo("en-US")) + 
+                        " for " + Settings.Instance.GaccountEmail;
                     break;
                 case SyncNotes.SubscriptionExpired:
                     expiration = (DateTime)extraData;
@@ -561,29 +579,20 @@ namespace OutlookGoogleCalendarSync.Forms {
 
         #region Accessors
         public String NextSyncVal {
-            get { return lNextSyncVal.Text; }
-            set { lNextSyncVal.Text = value; }
+            get { return GetControlPropertyThreadSafe(lNextSyncVal, "Text").ToString(); }
+            set { SetControlPropertyThreadSafe(lNextSyncVal, "Text", value); }
         }
         public String LastSyncVal {
             get { return lLastSyncVal.Text; }
             set { lLastSyncVal.Text = value; }
         }
+        public void StrikeOutNextSyncVal(Boolean strikeout) {
+            lNextSyncVal.Font = new Font(lNextSyncVal.Font, strikeout ? FontStyle.Strikeout : FontStyle.Regular);
+        }
         #endregion
 
         #region EVENTS
         #region Form actions
-        /// <summary>
-        /// Navigates up the parents of a control to the first TabControl control
-        /// </summary>
-        private static Control findFocusedTab(Control control) {
-            Control parentControl = control.Parent as Control;
-            while (parentControl != null && !(control is TabControl)) {
-                control = control.Parent;
-                parentControl = control.Parent;
-            }
-            return control;
-        }
-
         /// <summary>
         /// Detect when F1 is pressed for help
         /// </summary>
@@ -593,13 +602,8 @@ namespace OutlookGoogleCalendarSync.Forms {
                     try {
                         log.Fine("Active control: " + this.ActiveControl.ToString());
 
-                        Control focusedTab = null;
                         Control focusedPage = null;
-
-                        focusedTab = findFocusedTab(this.ActiveControl);
-
-                        if (focusedTab is TabControl)
-                            focusedPage = (focusedTab as TabControl).SelectedTab;
+                        focusedPage = Forms.Main.Instance.tabApp.SelectedTab;
 
                         if (focusedPage == null) {
                             System.Diagnostics.Process.Start("https://phw198.github.io/OutlookGoogleCalendarSync/guide");
@@ -752,6 +756,10 @@ namespace OutlookGoogleCalendarSync.Forms {
                         GoogleOgcs.Calendar.Instance.Authenticator.UserSubscriptionCheck();
                     }
                 } else {
+                    if (tbSyncNote.Tag.ToString().Contains("OGCS Premium renewal")) {
+                        MessageBox.Show("Before renewing, please ensure you don't already have an active recurring annual payment set up in PayPal :-)", 
+                            "Recurring payment already configured?", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
                     System.Diagnostics.Process.Start(tbSyncNote.Tag.ToString());
                 }
             }
@@ -894,19 +902,8 @@ namespace OutlookGoogleCalendarSync.Forms {
         }
 
         private void refreshCategories() {
-            clbCategories.BeginUpdate();
-            clbCategories.Items.Clear();
-            clbCategories.Items.Add("<No category assigned>");
             OutlookOgcs.Calendar.Instance.IOutlook.RefreshCategories();
-            foreach (String catName in OutlookOgcs.Calendar.Categories.GetNames()) {
-                clbCategories.Items.Add(catName);
-            }
-            foreach (String cat in Settings.Instance.Categories) {
-                try {
-                    clbCategories.SetItemChecked(clbCategories.Items.IndexOf(cat), true);
-                } catch { /* Category "cat" no longer exists */ }
-            }
-            clbCategories.EndUpdate();
+            OutlookOgcs.Calendar.Categories.BuildPicker(ref clbCategories);
             enableOutlookSettingsUI(true);
         }
 
@@ -980,17 +977,16 @@ namespace OutlookGoogleCalendarSync.Forms {
                 return;
             }
 
+            log.Debug("Retrieving Google calendar list.");
             this.bGetGoogleCalendars.Text = "Cancel retrieval";
-            cbGoogleCalendars.Enabled = false;
             List<GoogleCalendarListEntry> calendars = null;
             try {
                 calendars = GoogleOgcs.Calendar.Instance.GetCalendars();
-            } catch (ApplicationException ex) {
-                if (!String.IsNullOrEmpty(ex.Message)) console.UpdateWithError(null, ex);
             } catch (AggregateException agex) {
                 OGCSexception.AnalyseAggregate(agex, false);
             } catch (Google.Apis.Auth.OAuth2.Responses.TokenResponseException ex) {
                 OGCSexception.AnalyseTokenResponse(ex, false);
+            } catch (OperationCanceledException) {
             } catch (System.Exception ex) {
                 OGCSexception.Analyse(ex);
                 MessageBox.Show("Failed to retrieve Google calendars.\r\n" +
@@ -998,24 +994,33 @@ namespace OutlookGoogleCalendarSync.Forms {
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
                 StringBuilder sb = new StringBuilder();
                 console.BuildOutput("Unable to get the list of Google calendars. The following error occurred:", ref sb, false);
-                console.BuildOutput(OGCSexception.FriendlyMessage(ex), ref sb, false);
-                if (ex.InnerException != null) console.BuildOutput(ex.InnerException.Message, ref sb, false);
-                console.Update(sb, Console.Markup.error, logit: true);
-                if (Settings.Instance.Proxy.Type == "IE") {
-                    if (MessageBox.Show("Please ensure you can access the internet with Internet Explorer.\r\n" +
-                        "Test it now? If successful, please retry retrieving your Google calendars.",
-                        "Test IE Internet Access",
-                        MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes) {
-                        System.Diagnostics.Process.Start("iexplore.exe", "http://www.google.com");
+                if (ex is ApplicationException && ex.InnerException != null && ex.InnerException is Google.GoogleApiException) {
+                    console.BuildOutput(ex.Message, ref sb, false);
+                    console.Update(sb, Console.Markup.fail, logit: true);
+                } else {
+                    console.BuildOutput(OGCSexception.FriendlyMessage(ex), ref sb, false);
+                    console.Update(sb, Console.Markup.error, logit: true);
+                    if (Settings.Instance.Proxy.Type == "IE") {
+                        if (MessageBox.Show("Please ensure you can access the internet with Internet Explorer.\r\n" +
+                            "Test it now? If successful, please retry retrieving your Google calendars.",
+                            "Test IE Internet Access",
+                            MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes) {
+                            System.Diagnostics.Process.Start("iexplore.exe", "http://www.google.com");
+                        }
                     }
                 }
             }
             if (calendars != null) {
                 cbGoogleCalendars.Items.Clear();
+                calendars.Sort((x, y) => (x.Sorted()).CompareTo(y.Sorted()));
                 foreach (GoogleCalendarListEntry mcle in calendars) {
                     cbGoogleCalendars.Items.Add(mcle);
+                    if (cbGoogleCalendars.SelectedIndex == -1 && mcle.Id == Settings.Instance.UseGoogleCalendar.Id)
+                        cbGoogleCalendars.SelectedItem = mcle;
                 }
-                cbGoogleCalendars.SelectedIndex = 0;
+                if (cbGoogleCalendars.SelectedIndex == -1) {
+                    cbGoogleCalendars.SelectedIndex = 0;
+                }
                 tbClientID.ReadOnly = true;
                 tbClientSecret.ReadOnly = true;
             }
@@ -1026,7 +1031,13 @@ namespace OutlookGoogleCalendarSync.Forms {
         }
 
         private void cbGoogleCalendars_SelectedIndexChanged(object sender, EventArgs e) {
+            if (!this.Visible) return;
             Settings.Instance.UseGoogleCalendar = (GoogleCalendarListEntry)cbGoogleCalendars.SelectedItem;
+            if (cbGoogleCalendars.Text.StartsWith("[Read Only]") && Settings.Instance.SyncDirection.Id != Sync.Direction.GoogleToOutlook.Id) {
+                MessageBox.Show("You cannot " + (Settings.Instance.SyncDirection == Sync.Direction.Bidirectional ? "two-way " : "") + "sync with a read-only Google calendar.\n" +
+                    "Please review your calendar selection.", "Read-only Sync", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
+                this.tabAppSettings.SelectedTab = this.tabAppSettings.TabPages["tabGoogle"];
+            }
         }
 
         private void btResetGCal_Click(object sender, EventArgs e) {
@@ -1034,8 +1045,7 @@ namespace OutlookGoogleCalendarSync.Forms {
                 "Useful if you want to start syncing to a different account.",
                 "Reset Google account?", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == System.Windows.Forms.DialogResult.Yes) {
                 log.Info("User requested reset of Google authentication details.");
-                Settings.Instance.UseGoogleCalendar.Id = null;
-                Settings.Instance.UseGoogleCalendar.Name = null;
+                Settings.Instance.UseGoogleCalendar = new GoogleCalendarListEntry();
                 this.cbGoogleCalendars.Items.Clear();
                 this.tbClientID.ReadOnly = false;
                 this.tbClientSecret.ReadOnly = false;
@@ -1043,6 +1053,8 @@ namespace OutlookGoogleCalendarSync.Forms {
                     GoogleOgcs.Calendar.Instance.Authenticator.Reset(reauthorise: false);
                 else {
                     Settings.Instance.AssignedClientIdentifier = "";
+                    Settings.Instance.GaccountEmail = "";
+                    tbConnectedAcc.Text = "Not connected";
                     System.IO.File.Delete(System.IO.Path.Combine(Program.UserFilePath, GoogleOgcs.Authenticator.TokenFile));
                 }
             }
@@ -1089,6 +1101,8 @@ namespace OutlookGoogleCalendarSync.Forms {
                     case "How": section.Height = btCloseRegexRules.Visible ? 251 : 188; break;
                     case "When": section.Height = 119; break;
                     case "What": section.Height = 155; break;
+                    case "Logging": section.Height = 93; break;
+                    case "Proxy": section.Height = 197; break;
                 }
                 section.Height = Convert.ToInt16(section.Height * magnification);
             } else {
@@ -1097,10 +1111,16 @@ namespace OutlookGoogleCalendarSync.Forms {
             }
             sectionImage.Refresh();
 
-            gbSyncOptions_When.Top = gbSyncOptions_How.Location.Y + gbSyncOptions_How.Height + Convert.ToInt16(10 * magnification);
-            pbExpandWhen.Top = gbSyncOptions_When.Top - Convert.ToInt16(2 * magnification);
-            gbSyncOptions_What.Top = gbSyncOptions_When.Location.Y + gbSyncOptions_When.Height + Convert.ToInt16(10 * magnification);
-            pbExpandWhat.Top = gbSyncOptions_What.Top - Convert.ToInt16(2 * magnification);
+            if ("pbExpandHow|pbExpandWhen|pbExpandWhat".Contains(sectionImage.Name)) {
+                gbSyncOptions_When.Top = gbSyncOptions_How.Location.Y + gbSyncOptions_How.Height + Convert.ToInt16(10 * magnification);
+                pbExpandWhen.Top = gbSyncOptions_When.Top - Convert.ToInt16(2 * magnification);
+                gbSyncOptions_What.Top = gbSyncOptions_When.Location.Y + gbSyncOptions_When.Height + Convert.ToInt16(10 * magnification);
+                pbExpandWhat.Top = gbSyncOptions_What.Top - Convert.ToInt16(2 * magnification);
+
+            } else if ("pbExpandLogging|pbExpandProxy".Contains(sectionImage.Name)) {
+                gbAppBehaviour_Proxy.Top = gbAppBehaviour_Logging.Location.Y + gbAppBehaviour_Logging.Height + Convert.ToInt16(10 * magnification);
+                pbExpandProxy.Top = gbAppBehaviour_Proxy.Top - Convert.ToInt16(2 * magnification);
+            }
         }
 
         private void pbExpandHow_Click(object sender, EventArgs e) {
@@ -1125,7 +1145,7 @@ namespace OutlookGoogleCalendarSync.Forms {
                 if (tbTargetCalendar.Items.Contains("target calendar"))
                     tbTargetCalendar.Items.Remove("target calendar");
                 tbTargetCalendar.SelectedIndex = 0;
-                tbTargetCalendar.Enabled = cbPrivate.Checked || cbAvailable.Checked;
+                tbTargetCalendar.Enabled = cbPrivate.Checked || cbAvailable.Checked || cbColour.Checked;
             } else {
                 cbObfuscateDirection.Enabled = false;
                 cbObfuscateDirection.SelectedIndex = Settings.Instance.SyncDirection.Id - 1;
@@ -1140,25 +1160,24 @@ namespace OutlookGoogleCalendarSync.Forms {
                 tbTargetCalendar.Enabled = false;
             }
             if (Settings.Instance.SyncDirection == Sync.Direction.GoogleToOutlook) {
-                OutlookOgcs.Calendar.Instance.DeregisterForPushSync();
+                Sync.Engine.Instance.DeregisterForPushSync();
                 this.cbOutlookPush.Checked = false;
                 this.cbOutlookPush.Enabled = false;
-                this.cbUseGoogleDefaultReminder.Visible = false;
                 this.cbReminderDND.Visible = false;
                 this.dtDNDstart.Visible = false;
                 this.dtDNDend.Visible = false;
                 this.lDNDand.Visible = false;
-                cbAddReminders_CheckedChanged(null, null);
-            } else {
+            }
+            if (Settings.Instance.SyncDirection == Sync.Direction.OutlookToGoogle) {
                 this.cbOutlookPush.Enabled = true;
-                this.cbUseGoogleDefaultReminder.Visible = true;
                 this.cbReminderDND.Visible = true;
                 this.dtDNDstart.Visible = true;
                 this.dtDNDend.Visible = true;
                 this.lDNDand.Visible = true;
-                cbAddReminders_CheckedChanged(null, null);
             }
             cbAddAttendees_CheckedChanged(null, null);
+            cbAddReminders_CheckedChanged(null, null);
+            cbGoogleCalendars_SelectedIndexChanged(null, null);
             showWhatPostit("Description");
         }
 
@@ -1179,13 +1198,13 @@ namespace OutlookGoogleCalendarSync.Forms {
             Settings.Instance.Obfuscation.Enabled = cbOfuscate.Checked;
         }
 
-        private void btObfuscateRules_CheckedChanged(object sender, EventArgs e) {
+        private void btObfuscateRules_Click(object sender, EventArgs e) {
             this.howObfuscatePanel.Visible = true;
             this.howMorePanel.Visible = false;
             this.btCloseRegexRules.Visible = true;
             syncOptionSizing(gbSyncOptions_How, pbExpandHow, true);
         }
-        private void btCloseRegexRules_CheckedChanged(object sender, EventArgs e) {
+        private void btCloseRegexRules_Click(object sender, EventArgs e) {
             this.btCloseRegexRules.Visible = false;
             this.howMorePanel.Visible = true;
             this.howObfuscatePanel.Visible = false;
@@ -1211,7 +1230,6 @@ namespace OutlookGoogleCalendarSync.Forms {
                 }
                 this.gbSyncOptions_How.Height = minPanelHeight;
                 this.gbSyncOptions_What.Height = 112;
-                this.btHowMore.Text = "More...";
             }
         }
 
@@ -1273,7 +1291,7 @@ namespace OutlookGoogleCalendarSync.Forms {
         #region When
         public int MinSyncMinutes {
             get {
-                if (System.Diagnostics.Debugger.IsAttached) return 1;
+                if (Program.InDeveloperMode) return 1;
                 else {
                     if (Settings.Instance.OutlookPush && Settings.Instance.SyncDirection != Sync.Direction.GoogleToOutlook)
                         return 120;
@@ -1304,8 +1322,8 @@ namespace OutlookGoogleCalendarSync.Forms {
                 if (cbIntervalUnit.SelectedItem.ToString() == "Minutes") {
                     if ((int)tbInterval.Value < MinSyncMinutes)
                         tbInterval.Value = (tbInterval.Value < Convert.ToInt16(tbInterval.Text)) ? 0 : MinSyncMinutes;
-                    else if ((int)tbInterval.Value > 120) {
-                        tbInterval.Value = 3;
+                    else if ((int)tbInterval.Value > MinSyncMinutes) {
+                        tbInterval.Value = (MinSyncMinutes / 60) + 1;
                         cbIntervalUnit.Text = "Hours";
                     }
 
@@ -1333,8 +1351,8 @@ namespace OutlookGoogleCalendarSync.Forms {
             Settings.Instance.OutlookPush = cbOutlookPush.Checked;
             if (this.Visible) {
                 if (tbInterval.Value != 0) tbMinuteOffsets_ValueChanged(null, null);
-                if (cbOutlookPush.Checked) OutlookOgcs.Calendar.Instance.RegisterForPushSync();
-                else OutlookOgcs.Calendar.Instance.DeregisterForPushSync();
+                if (cbOutlookPush.Checked) Sync.Engine.Instance.RegisterForPushSync();
+                else Sync.Engine.Instance.DeregisterForPushSync();
                 NotificationTray.UpdateAutoSyncItems();
             }
         }
@@ -1389,7 +1407,8 @@ namespace OutlookGoogleCalendarSync.Forms {
 
         private void cbAddReminders_CheckedChanged(object sender, EventArgs e) {
             if (this.Visible) Settings.Instance.AddReminders = cbAddReminders.Checked;
-            cbUseGoogleDefaultReminder.Enabled = cbAddReminders.Checked;
+            cbUseGoogleDefaultReminder.Enabled = Settings.Instance.SyncDirection != Sync.Direction.GoogleToOutlook;
+            cbUseOutlookDefaultReminder.Enabled = Settings.Instance.SyncDirection != Sync.Direction.OutlookToGoogle;
             cbReminderDND.Enabled = cbAddReminders.Checked;
             dtDNDstart.Enabled = cbAddReminders.Checked;
             dtDNDend.Enabled = cbAddReminders.Checked;
@@ -1397,6 +1416,9 @@ namespace OutlookGoogleCalendarSync.Forms {
         }
         private void cbUseGoogleDefaultReminder_CheckedChanged(object sender, EventArgs e) {
             Settings.Instance.UseGoogleDefaultReminder = cbUseGoogleDefaultReminder.Checked;
+        }
+        private void cbUseOutlookDefaultReminder_CheckedChanged(object sender, EventArgs e) {
+            Settings.Instance.UseOutlookDefaultReminder = cbUseOutlookDefaultReminder.Checked;
         }
         private void cbReminderDND_CheckedChanged(object sender, EventArgs e) {
             Settings.Instance.ReminderDND = cbReminderDND.Checked;
@@ -1433,20 +1455,41 @@ namespace OutlookGoogleCalendarSync.Forms {
         private void cbStartOnStartup_CheckedChanged(object sender, EventArgs e) {
             Settings.Instance.StartOnStartup = cbStartOnStartup.Checked;
             tbStartupDelay.Enabled = cbStartOnStartup.Checked;
-            Program.ManageStartupRegKey();
+            try {
+                Program.ManageStartupRegKey();
+            } catch (System.Exception ex) {
+                if (ex is System.Security.SecurityException) OGCSexception.LogAsFail(ref ex); //User doesn't have rights to access registry
+                OGCSexception.Analyse("Failed accessing registry for startup key.", ex);
+                if (this.Visible) {
+                    MessageBox.Show("You do not have permissions to access the system registry.\nThis setting cannot be used.",
+                        "Registry access denied", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
+                }
+                cbStartOnStartup.CheckedChanged -= cbStartOnStartup_CheckedChanged;
+                cbStartOnStartup.Checked = false;
+                tbStartupDelay.Enabled = false;
+                cbStartOnStartup.CheckedChanged += cbStartOnStartup_CheckedChanged;
+            }
         }
 
         private void cbHideSplash_CheckedChanged(object sender, EventArgs e) {
-            if (Settings.Instance.Subscribed == DateTime.Parse("01-Jan-2000") && !Settings.Instance.Donor) {
+            if (!Settings.Instance.UserIsBenefactor()) {
                 cbHideSplash.CheckedChanged -= cbHideSplash_CheckedChanged;
                 cbHideSplash.Checked = false;
                 cbHideSplash.CheckedChanged += cbHideSplash_CheckedChanged;
                 ToolTips.SetToolTip(cbHideSplash, "Donate £10 or more to enable this feature.");
                 ToolTips.Show(ToolTips.GetToolTip(cbHideSplash), cbHideSplash, 5000);
-                Settings.Instance.HideSplashScreen = cbHideSplash.Checked;
-            } else {
-                Settings.Instance.HideSplashScreen = cbHideSplash.Checked;
             }
+            Settings.Instance.HideSplashScreen = cbHideSplash.Checked;
+        }
+
+        private void cbSuppressSocialPopup_CheckedChanged(object sender, EventArgs e) {
+            if (!Settings.Instance.UserIsBenefactor()) {
+                cbSuppressSocialPopup.CheckedChanged -= cbSuppressSocialPopup_CheckedChanged;
+                cbSuppressSocialPopup.Checked = false;
+                cbSuppressSocialPopup.CheckedChanged += cbSuppressSocialPopup_CheckedChanged;
+                ToolTips.SetToolTip(cbSuppressSocialPopup, "Donate £10 or more to enable this feature.");
+            }
+            Settings.Instance.SuppressSocialPopup = cbSuppressSocialPopup.Checked;
         }
 
         private void cbShowBubbleTooltipsCheckedChanged(object sender, System.EventArgs e) {
@@ -1477,13 +1520,21 @@ namespace OutlookGoogleCalendarSync.Forms {
             }
         }
 
+        private void pbExpandLogging_Click(object sender, EventArgs e) {
+            syncOptionSizing(gbAppBehaviour_Logging, pbExpandLogging);
+        }
+
+        private void pbExpandProxy_Click(object sender, EventArgs e) {
+            syncOptionSizing(gbAppBehaviour_Proxy, pbExpandProxy);
+        }
+
         private void cbCreateFiles_CheckedChanged(object sender, EventArgs e) {
             Settings.Instance.CreateCSVFiles = cbCreateFiles.Checked;
         }
 
         private void cbLoggingLevel_SelectedIndexChanged(object sender, EventArgs e) {
             Settings.configureLoggingLevel(this.cbLoggingLevel.Text);
-            Settings.Instance.LoggingLevel = this.cbLoggingLevel.Text.ToUpper();
+            if (this.Visible) Settings.Instance.LoggingLevel = this.cbLoggingLevel.Text.ToUpper();
         }
 
         private void btLogLocation_Click(object sender, EventArgs e) {
@@ -1498,6 +1549,8 @@ namespace OutlookGoogleCalendarSync.Forms {
         }
 
         private void cbCloudLogging_CheckStateChanged(object sender, EventArgs e) {
+            if (!this.Visible) return;
+
             if (cbCloudLogging.CheckState == CheckState.Indeterminate)
                 Settings.Instance.CloudLogging = null;
             else
@@ -1509,12 +1562,22 @@ namespace OutlookGoogleCalendarSync.Forms {
             bool result = rbProxyCustom.Checked;
             txtProxyServer.Enabled = result;
             txtProxyPort.Enabled = result;
+            tbBrowserAgent.Enabled = result;
+            btCheckBrowserAgent.Enabled = result;
             cbProxyAuthRequired.Enabled = result;
             if (result) {
                 result = !string.IsNullOrEmpty(txtProxyUser.Text) && !string.IsNullOrEmpty(txtProxyPassword.Text);
                 cbProxyAuthRequired.Checked = result;
                 txtProxyUser.Enabled = result;
                 txtProxyPassword.Enabled = result;
+            }
+        }
+
+        private void btCheckBrowserAgent_Click(object sender, EventArgs e) {
+            try {
+                System.Diagnostics.Process.Start("https://phw198.github.io/OutlookGoogleCalendarSync/browseruseragent");
+            } catch (System.Exception ex) {
+                OGCSexception.Analyse("Failed to check browser's user agent.", ex);
             }
         }
 
@@ -1562,7 +1625,7 @@ namespace OutlookGoogleCalendarSync.Forms {
         }
 
         private void pbDonate_Click(object sender, EventArgs e) {
-            Social.Donate();
+            Program.Donate();
         }
 
         private void btCheckForUpdate_Click(object sender, EventArgs e) {
@@ -1609,9 +1672,11 @@ namespace OutlookGoogleCalendarSync.Forms {
         }
         #endregion
 
-        #region Social Media & Analytics
+        #region Social Media
         public void CheckSyncMilestone() {
             try {
+                if (Settings.Instance.SuppressSocialPopup && Settings.Instance.UserIsBenefactor()) return;
+
                 Boolean isMilestone = false;
                 Int32 syncs = Settings.Instance.CompletedSyncs;
                 String blurb = "You've completed " + String.Format("{0:n0}", syncs) + " syncs! Why not let people know how useful this tool is...";
@@ -1623,11 +1688,13 @@ namespace OutlookGoogleCalendarSync.Forms {
                     case 10: isMilestone = true; break;
                     case 100: isMilestone = true; break;
                     case 250: isMilestone = true; break;
+                    case 500: isMilestone = true; break;
                     case 1000: isMilestone = true; break;
+                    case 5000: isMilestone = true; break;
+                    case 10000: isMilestone = true; break;
                 }
                 if (isMilestone) {
-                    if (MessageBox.Show(blurb, "Spread the Word", MessageBoxButtons.OKCancel, MessageBoxIcon.Exclamation) == DialogResult.OK)
-                        tabApp.SelectedTab = tabPage_Social;
+                    new Forms.Social().Show();
                 }
             } catch (System.Exception ex) {
                 log.Warn("Failed checking sync milestone.");
@@ -1642,23 +1709,23 @@ namespace OutlookGoogleCalendarSync.Forms {
             Social.Twitter_follow();
         }
 
-        private void btSocialGplus_Click(object sender, EventArgs e) {
-            Social.Google_share();
-        }
-        private void pbSocialGplusCommunity_Click(object sender, EventArgs e) {
-            Social.Google_goToCommunity();
-        }
-
         private void btSocialFB_Click(object sender, EventArgs e) {
             Social.Facebook_share();
+        }
+        private void btFbLike_Click(object sender, EventArgs e) {
+            Social.Facebook_like();
+        }
+
+        private void btSocialLinkedin_Click(object sender, EventArgs e) {
+            Social.Linkedin_share();
         }
 
         private void btSocialRSSfeed_Click(object sender, EventArgs e) {
             Social.RSS_follow();
         }
 
-        private void btSocialLinkedin_Click(object sender, EventArgs e) {
-            Social.Linkedin_share();
+        private void btSocialGitHub_Click(object sender, EventArgs e) {
+            Social.GitHub();
         }
         #endregion
     }
